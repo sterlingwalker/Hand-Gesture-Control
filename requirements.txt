@@ -1,0 +1,22 @@
+## `requirements.txt`
+# Core
+numpy
+opencv-python
+pyyaml
+tqdm
+
+# ML
+torch
+torchvision
+
+# Hand tracking
+mediapipe
+
+# UI control (choose what you need)
+pyautogui
+pynput
+
+# Dev/testing
+pytest
+black
+ruff
