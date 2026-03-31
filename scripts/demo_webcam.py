@@ -17,6 +17,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.append(str(SRC_ROOT))
 
 from hand_gesture_control.model import load_checkpoint
+from hand_gesture_control.inference import PredictionSmoother, GestureState
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,8 +29,9 @@ def parse_args() -> argparse.Namespace:
         help="Checkpoint path.",
     )
     parser.add_argument("--camera", type=int, default=0)
-    parser.add_argument("--min-confidence", type=float, default=0.6)
+    parser.add_argument("--min-confidence", type=float, default=0.90)
     parser.add_argument("--bbox-margin", type=float, default=0.15)
+    parser.add_argument("--no-smoothing", action="store_true", help="Disable prediction smoothing")
     return parser.parse_args()
 
 
@@ -59,6 +61,19 @@ def main() -> None:
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, meta = load_checkpoint(args.checkpoint, device)
+
+    # Initialize smoother and gesture state
+    num_classes = len(meta.class_to_idx)
+    smoother = PredictionSmoother(
+        num_classes=num_classes,
+        window_size=5,
+        ema_alpha=0.4,
+        confidence_threshold=args.min_confidence,
+    )
+    gesture_state = GestureState(
+        min_hold_frames=8,
+        confidence_threshold=args.min_confidence,
+    )
 
     weights = models.EfficientNet_B0_Weights.DEFAULT
     mean = weights.meta.get("mean")
@@ -118,6 +133,8 @@ def main() -> None:
         confidence = 0.0
         bbox = None
         crop = frame_rgb
+        stable_gesture = "none"
+        just_triggered = False
 
         if hands is not None:
             results = hands.process(frame_rgb)
@@ -137,18 +154,38 @@ def main() -> None:
             with torch.no_grad():
                 logits = model(input_tensor)
                 probs = torch.softmax(logits, dim=1)[0]
-                confidence, idx = torch.max(probs, dim=0)
-                label = meta.idx_to_class[int(idx)]
-                confidence = float(confidence)
+
+                if args.no_smoothing:
+                    # Raw prediction
+                    confidence, idx = torch.max(probs, dim=0)
+                    label = meta.idx_to_class[int(idx)]
+                    confidence = float(confidence)
+                    stable_gesture = label if confidence >= args.min_confidence else "none"
+                    just_triggered = False
+                else:
+                    # Smoothed prediction
+                    idx, confidence = smoother.update(probs)
+                    label = meta.idx_to_class[idx]
+                    stable_gesture, just_triggered = gesture_state.update(label, confidence)
 
         if bbox:
             left, top, right, bottom = bbox
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 200, 0), 2)
+            color = (0, 255, 0) if just_triggered else (0, 200, 0)
+            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
 
+        # Display current prediction
         text = f"{label} ({confidence:.2f})"
         if confidence < args.min_confidence:
-            text = "low_confidence"
+            text = "uncertain"
         cv2.putText(frame, text, (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+        # Display stable gesture (confirmed after hold time)
+        if stable_gesture != "none":
+            stable_text = f"ACTIVE: {stable_gesture}"
+            color = (0, 255, 255) if just_triggered else (0, 255, 0)
+            cv2.putText(frame, stable_text, (12, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        else:
+            cv2.putText(frame, "Hold gesture...", (12, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 1)
 
         cv2.imshow("Hand Gesture Control", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
