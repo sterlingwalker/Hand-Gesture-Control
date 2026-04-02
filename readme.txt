@@ -2,21 +2,34 @@
 ************** Important  Info **************
 =============================================
 +-------------------------------------------+
-+              Current Gestures             |
++            Static Hand Gestures           |
 +---------------------+---------------------+
 |        palm         |    Switch Window    |
 +---------------------+---------------------+
-|        fist         |       Tab Key       |
+|        fist         |  Tab / Left Click*  |
 +---------------------+---------------------+
 |  like (thumbs up)   |      Enter Key      |
 +---------------------+---------------------+
 |dislike (thumbs down)|    Backspace Key    |
 +---------------------+---------------------+
-|         ok          |      Space Key      |
+|         ok          | Space / Right Click*|
 +---------------------+---------------------+
 |        peace        |    Close Window     |
 +---------------------+---------------------+
-|    one (pointing)   |    Open Browser     |
+|    one (pointing)   | Toggle Cursor Mode  |
++---------------------+---------------------+
+* In cursor mode: fist = left click, ok = right click
+
++-------------------------------------------+
++            Dynamic Swipe Gestures         |
++---------------------+---------------------+
+|      swipe_up       |     Scroll Down     |
++---------------------+---------------------+
+|     swipe_down      |      Scroll Up      |
++---------------------+---------------------+
+|     swipe_left      |   Previous Window   |
++---------------------+---------------------+
+|     swipe_right     |     Next Window     |
 +---------------------+---------------------+
 
 *** Runnable Scripts (scripts/) ***

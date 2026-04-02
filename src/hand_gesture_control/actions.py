@@ -21,13 +21,17 @@ class ActionMapper:
     """Maps gestures to UI actions.
 
     Default mappings:
-        palm    → switch window (Alt+Tab)
-        fist    → Tab key
-        like    → Enter key
-        dislike → Backspace key
-        ok      → Space key
-        peace   → close window (Alt+F4)
-        one     → open browser (google.com)
+        palm        → switch window (Alt+Tab)
+        fist        → Tab key
+        like        → Enter key
+        dislike     → Backspace key
+        ok          → Space key
+        peace       → close window (Alt+F4)
+        one         → cursor control mode
+        swipe_up    → scroll down
+        swipe_down  → scroll up
+        swipe_left  → previous window (Alt+Shift+Tab)
+        swipe_right → next window (Alt+Tab)
     """
 
     enabled: bool = True
@@ -138,11 +142,92 @@ class ActionMapper:
             return "close window"
 
         elif gesture == "one":
-            # Launch default browser
-            webbrowser.open("https://www.google.com")
+            # Cursor control mode - handled separately in run_hgr.py
+            # This is just a placeholder, actual movement is done by CursorController
+            return None
+
+        # Swipe gestures
+        elif gesture == "swipe_up":
+            # Scroll down (swipe up pushes content down)
+            if HAS_PYAUTOGUI:
+                pyautogui.scroll(-5)  # Negative = scroll down
             if self.verbose:
-                print("Action: open browser")
-            return "open browser"
+                print("Action: scroll down")
+            return "scroll down"
+
+        elif gesture == "swipe_down":
+            # Scroll up (swipe down pulls content up)
+            if HAS_PYAUTOGUI:
+                pyautogui.scroll(5)  # Positive = scroll up
+            if self.verbose:
+                print("Action: scroll up")
+            return "scroll up"
+
+        elif gesture == "swipe_left":
+            # Previous window (counter-clockwise)
+            if HAS_PYAUTOGUI:
+                pyautogui.hotkey("alt", "shift", "tab")
+            if self.verbose:
+                print("Action: previous window")
+            return "prev window"
+
+        elif gesture == "swipe_right":
+            # Next window (clockwise)
+            if HAS_PYAUTOGUI:
+                pyautogui.hotkey("alt", "tab")
+            if self.verbose:
+                print("Action: next window")
+            return "next window"
+
+        return None
+
+    def execute_swipe(self, gesture: str, velocity: float) -> str | None:
+        """Execute swipe action with velocity-based intensity.
+
+        Args:
+            gesture: The swipe direction (swipe_up, swipe_down, etc.)
+            velocity: Speed of swipe (0-1, higher = faster)
+
+        Returns:
+            Description of action taken, or None if no action
+        """
+        if not self.enabled:
+            return None
+
+        # Scale scroll wheel clicks based on velocity (50 to 200 clicks)
+        scroll_clicks = int(50 + velocity * 150)
+
+        if gesture == "swipe_up":
+            # Scroll wheel down (content moves up)
+            if HAS_PYAUTOGUI:
+                pyautogui.scroll(-scroll_clicks)
+            if self.verbose:
+                print(f"Action: scroll wheel down ({scroll_clicks})")
+            return f"scroll down ({scroll_clicks})"
+
+        elif gesture == "swipe_down":
+            # Scroll wheel up (content moves down)
+            if HAS_PYAUTOGUI:
+                pyautogui.scroll(scroll_clicks)
+            if self.verbose:
+                print(f"Action: scroll wheel up ({scroll_clicks})")
+            return f"scroll up ({scroll_clicks})"
+
+        elif gesture == "swipe_left":
+            # Previous window
+            if HAS_PYAUTOGUI:
+                pyautogui.hotkey("alt", "shift", "tab")
+            if self.verbose:
+                print("Action: previous window")
+            return "prev window"
+
+        elif gesture == "swipe_right":
+            # Next window
+            if HAS_PYAUTOGUI:
+                pyautogui.hotkey("alt", "tab")
+            if self.verbose:
+                print("Action: next window")
+            return "next window"
 
         return None
 
@@ -159,9 +244,15 @@ class ActionMapper:
 
 # Convenience functions for common actions
 def click() -> None:
-    """Perform mouse click."""
+    """Perform left mouse click."""
     if HAS_PYAUTOGUI:
         pyautogui.click()
+
+
+def right_click() -> None:
+    """Perform right mouse click."""
+    if HAS_PYAUTOGUI:
+        pyautogui.rightClick()
 
 
 def press_key(key: str) -> None:
@@ -180,3 +271,11 @@ def move_mouse(dx: int, dy: int) -> None:
     """Move mouse by relative amount."""
     if HAS_PYAUTOGUI:
         pyautogui.move(dx, dy)
+    else:
+        print(f"WARNING: pyautogui not available, cannot move mouse by ({dx}, {dy})")
+
+
+def move_mouse_to(x: int, y: int) -> None:
+    """Move mouse to absolute screen position."""
+    if HAS_PYAUTOGUI:
+        pyautogui.moveTo(x, y)

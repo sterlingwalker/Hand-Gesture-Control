@@ -4,13 +4,19 @@
 Controls mouse and keyboard using hand gestures detected via webcam.
 
 Gesture mappings:
-    palm    → switch window (Alt+Tab)
-    fist    → Tab key
-    like    → Enter key
-    dislike → Backspace key
-    ok      → Space key
-    peace   → close window (Alt+F4)
-    one     → open browser (google.com)
+    palm        → switch window (Alt+Tab)
+    fist        → Tab key (or left click in cursor mode)
+    like        → Enter key
+    dislike     → Backspace key
+    ok          → Space key (or right click in cursor mode)
+    peace       → close window (Alt+F4)
+    one         → toggle cursor control (point to enter/exit, move any gesture)
+
+Swipe mappings:
+    swipe_up    → scroll down
+    swipe_down  → scroll up
+    swipe_left  → previous window (Alt+Shift+Tab)
+    swipe_right → next window (Alt+Tab)
 
 Controls:
     q       → quit
@@ -43,8 +49,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.append(str(SRC_ROOT))
 
 from hand_gesture_control.model import load_checkpoint
-from hand_gesture_control.inference import PredictionSmoother, GestureState
-from hand_gesture_control.actions import ActionMapper
+from hand_gesture_control.inference import PredictionSmoother, GestureState, SwipeDetector, CursorController
+from hand_gesture_control.actions import ActionMapper, move_mouse_to
 
 
 def parse_args() -> argparse.Namespace:
@@ -138,6 +144,18 @@ def main() -> None:
         verbose=not args.quiet,
         cooldown_duration=args.cooldown,
     )
+    swipe_detector = SwipeDetector(
+        min_velocity=0.03,  # Lower = easier to trigger
+        min_frames=2,  # Fewer frames needed
+        cooldown_frames=15,
+    )
+    cursor_controller = CursorController(
+        smoothing=0.5,  # Higher = smoother but more latency
+        buffer_top=0.25,  # More buffer at top
+        buffer_bottom=0.12,
+        buffer_left=0.12,
+        buffer_right=0.12,
+    )
 
     # Set up image transforms
     weights = models.EfficientNet_B0_Weights.DEFAULT
@@ -172,6 +190,14 @@ def main() -> None:
     if not cap.isOpened():
         raise SystemExit("Could not open webcam")
 
+    # Move cursor to center of screen on startup
+    try:
+        import pyautogui
+        screen_w, screen_h = pyautogui.size()
+        pyautogui.moveTo(screen_w // 2, screen_h // 2)
+    except:
+        pass
+
     print("\n" + "=" * 50)
     print("Hand Gesture Recognition Active")
     print("=" * 50)
@@ -197,6 +223,8 @@ def main() -> None:
         stable_gesture = "none"
         just_triggered = False
         action_taken = None
+        hand_center = None
+        swipe_detected = None
 
         # Detect hand
         if hands is not None:
@@ -207,10 +235,26 @@ def main() -> None:
                 if bbox:
                     left, top, right, bottom = bbox
                     crop = frame_rgb[top:bottom, left:right]
+
+                # Calculate hand center for swipe detection (use wrist as reference)
+                wrist = hand_landmarks.landmark[0]
+                hand_center = (wrist.x, wrist.y)
+
                 if mp_draw is not None:
                     mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-        # Classify gesture
+        # Check for swipes (only when not in cursor mode)
+        if not cursor_controller.is_active() and hand_center is not None:
+            swipe_result = swipe_detector.update(hand_center)
+            if swipe_result:
+                swipe_detected = swipe_result.direction
+                if not args.quiet:
+                    print(f"SWIPE DETECTED: {swipe_detected} (velocity: {swipe_result.velocity:.2f})")
+                if not paused:
+                    action_taken = action_mapper.execute_swipe(swipe_detected, swipe_result.velocity)
+
+        # Classify gesture FIRST (needed to know if we should freeze cursor)
+        click_gesture_detected = False
         if crop.size > 0:
             input_tensor = transform(crop).unsqueeze(0).to(device)
             with torch.no_grad():
@@ -224,9 +268,52 @@ def main() -> None:
                 # Check for stable gesture
                 stable_gesture, just_triggered = gesture_state.update(label, confidence)
 
-                # Execute action
-                if not paused and just_triggered:
-                    action_taken = action_mapper.execute(stable_gesture, just_triggered)
+                # Toggle cursor control with "one" gesture
+                if just_triggered and stable_gesture == "one":
+                    if cursor_controller.is_active():
+                        cursor_controller.deactivate()
+                        if not args.quiet:
+                            print("Cursor control: OFF")
+                    else:
+                        cursor_controller.activate(hand_center)
+                        if not args.quiet:
+                            print("Cursor control: ON")
+
+                # Check if this is a click gesture (freeze cursor during these)
+                if cursor_controller.is_active() and label in ("fist", "ok") and confidence > 0.7:
+                    click_gesture_detected = True
+
+                # Handle actions
+                if not paused and just_triggered and stable_gesture != "one":
+                    if cursor_controller.is_active():
+                        # Cursor mode: fist = left click, ok = right click
+                        # Use lower confidence threshold (0.80) for cursor mode clicks
+                        if stable_gesture == "fist" and confidence >= 0.80:
+                            from hand_gesture_control.actions import click
+                            click()
+                            action_taken = "left click"
+                            if not args.quiet:
+                                print("Action: left click")
+                        elif stable_gesture == "ok" and confidence >= 0.80:
+                            from hand_gesture_control.actions import right_click
+                            right_click()
+                            action_taken = "right click"
+                            if not args.quiet:
+                                print("Action: right click")
+                    else:
+                        # Normal mode: execute mapped action
+                        action_taken = action_mapper.execute(stable_gesture, just_triggered)
+
+        # Handle cursor control movement AFTER classification
+        # Freeze tracking during click gestures (fist/ok) to prevent cursor jump
+        if cursor_controller.is_active() and not paused and hand_center is not None:
+            if not click_gesture_detected:
+                screen_pos = cursor_controller.update(hand_center)
+                if screen_pos:
+                    # Debug: print hand position and screen position
+                    if not args.quiet:
+                        print(f"DEBUG: hand=({hand_center[0]:.2f}, {hand_center[1]:.2f}) -> screen=({screen_pos[0]}, {screen_pos[1]})")
+                    move_mouse_to(screen_pos[0], screen_pos[1])
 
         # Update cooldown
         action_mapper.tick()
@@ -243,15 +330,19 @@ def main() -> None:
         text = f"{label} ({confidence:.2f})"
         cv2.putText(frame, text, (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-        # Line 2: Stable gesture
-        if stable_gesture != "none":
+        # Line 2: Stable gesture or cursor mode
+        if cursor_controller.is_active():
+            cv2.putText(frame, "CURSOR MODE - move hand to control mouse", (12, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+        elif stable_gesture != "none":
             color = (0, 255, 255) if just_triggered else (0, 255, 0)
             cv2.putText(frame, f"ACTIVE: {stable_gesture}", (12, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         else:
             cv2.putText(frame, "Hold gesture...", (12, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 1)
 
-        # Line 3: Action taken
-        if action_taken:
+        # Line 3: Swipe or action
+        if swipe_detected:
+            cv2.putText(frame, f"SWIPE: {swipe_detected}", (12, 104), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 100, 100), 2)
+        elif action_taken:
             cv2.putText(frame, f"ACTION: {action_taken}", (12, 104), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
 
         # Line 4: Status bar
@@ -273,6 +364,8 @@ def main() -> None:
             smoother.reset()
             gesture_state.reset()
             action_mapper.reset()
+            swipe_detector.reset()
+            cursor_controller.reset()
             print("State reset")
 
     cap.release()
